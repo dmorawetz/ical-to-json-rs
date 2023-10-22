@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use ical::parser::ical::component::IcalCalendar;
+use ical::parser::ical::component::{IcalCalendar, IcalEvent};
+use ical::IcalParser;
 use reqwest::blocking::get;
+use std::io::BufReader;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 struct Event {
@@ -20,9 +22,9 @@ fn parse_ical_utc_date_time(value: Option<String>) -> Option<DateTime<Utc>> {
     Some(result.ok()?.and_utc())
 }
 
-impl TryFrom<ical::parser::ical::component::IcalEvent> for Event {
+impl TryFrom<IcalEvent> for Event {
     type Error = anyhow::Error;
-    fn try_from(value: ical::parser::ical::component::IcalEvent) -> Result<Self> {
+    fn try_from(value: IcalEvent) -> Result<Self> {
         let mut result = Event::default();
 
         for property in value.properties {
@@ -42,21 +44,24 @@ impl TryFrom<ical::parser::ical::component::IcalEvent> for Event {
 fn main() -> Result<()> {
     let body = get("https://metalab.at/calendar/export/ical/")?.text()?;
 
-    let reader = ical::IcalParser::new(std::io::BufReader::new(body.as_bytes()));
+    let reader = BufReader::new(body.as_bytes());
+    let parser = IcalParser::new(reader);
 
-    let calendar: IcalCalendar = reader
+    let calendar: IcalCalendar = parser
         .into_iter()
         .next()
         .context("no calendar found in ical file")?
         .context("")?;
 
-    let mut events: Vec<Event> = vec![];
+    let events: Result<Vec<Event>> = calendar
+        .events
+        .into_iter()
+        .map(|it| it.try_into())
+        .collect();
 
-    for event in calendar.events {
-        events.push(event.try_into()?);
-    }
+    let events = events.context("could not convert events")?;
 
-    let json = serde_json::to_string(&events)?;
+    let json = serde_json::to_string_pretty(&events)?;
     println!("{json}");
 
     Ok(())
